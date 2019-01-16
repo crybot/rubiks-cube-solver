@@ -3,9 +3,12 @@ module ScrambleParser where
 import Text.Parsec
 import Rubik
 
+direction :: Parsec String st Permutation
+direction = readDir <$> oneOf (concatMap show directions)
+
 turn :: Parsec String st Permutation
 turn = do
-  dir <- readDir <$> oneOf (concatMap show directions)
+  dir <- direction
   rotation <- option Clockwise (char '\'' >> return CounterClockwise)
   n <- option 1 (char '2' >> return 2)
   return $ mconcat $ replicate n $ Permutation $ turnCube dir rotation
