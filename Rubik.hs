@@ -4,6 +4,7 @@ module Rubik where
 
 import           Data.List                      ( transpose )
 import qualified Data.Map.Strict               as Map
+import Data.Semigroup
 
 -- Face direction
 data Direction

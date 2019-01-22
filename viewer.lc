@@ -1,18 +1,21 @@
 makeFrame (time :: Float)
           (color :: Vec 4 Float)
-          (texture :: Texture)
-          (prims :: PrimitiveStream Triangle (Vec 4 Float, Vec 3 Float, Vec 3 Float))
+          (prims :: PrimitiveStream Triangle ((Vec 4 Float)))
 
-    = imageFrame (emptyDepthImage 1, emptyColorImage (V4 0 0 0.4 1))
+    = imageFrame (emptyDepthImage 1, emptyColorImage (V4 0.2 0 0.5 1))
   `overlay`
       prims
-    & mapPrimitives (\(p,n,uvw) -> (perspective 0.1 100 45 1 *. lookat (V3 0 0 5) (V3 0 0 0) (V3 0 1 0) *. rotMatrixX time *. rotMatrixZ time *. p, V2 uvw%x (1 - uvw%y) ))
-    & rasterizePrimitives (TriangleCtx CullBack PolygonFill NoOffset LastVertex) ((Smooth))
-    & mapFragments (\((uv)) -> ((color * texture2D (Sampler PointFilter MirroredRepeat texture) uv )))
+    & mapPrimitives (\((p)) -> (projmat *. p, color))
+    -- & mapPrimitives (\(p, c) -> (rotMatrixX(-pi/8) *. rotMatrixY (time) *. p, c))
+    & rasterizePrimitives (TriangleCtx CullNone PolygonFill NoOffset LastVertex) ((Smooth))
     & accumulateWith (DepthOp Less True, ColorOp NoBlending (V4 True True True True))
+  where
+      projmat = perspective 0.1 100.0 (40 * pi / 180) 1.0
+          .*. lookat (V3 (0.0) 1 (-2.0)) (V3 0.0 0.0 0.0) (V3 0.0 1.0 0.0)
+          .*. rotMatrixY (time)
+
 
 main = renderFrame $
    makeFrame (Uniform "time")
-             (Uniform "diffuseColor")
-             (Texture2DSlot "diffuseTexture")
-             (fetch "objects" (Attribute "position", Attribute "normal", Attribute "uvw"))
+             (Uniform "color")
+             (fetch "objects" ((Attribute "position")))

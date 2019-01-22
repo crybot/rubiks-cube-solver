@@ -6,7 +6,7 @@ import qualified Data.Vector                   as V
 
 import           LambdaCube.GL                 as LambdaCubeGL -- renderer
 import           LambdaCube.GL.Mesh            as LambdaCubeGL
-
+import           LambdaCube.GL.Mesh (Mesh)
 import           Codec.Picture                 as Juicy
 
 import           Data.Aeson
@@ -17,95 +17,61 @@ import Data.Text (unpack,Text)
 import Data.List (groupBy,nub)
 import Data.Maybe
 import Control.Monad
+import LambdaCube.Linear
+import Rubik
+import ScrambleParser
 
-import Codec.Wavefront
-import MtlParser
+-- Color utility functions
+rgb :: Float -> Float -> Float -> V4F
+rgb r g b = V4 r g b 1.0 -- the 4th channel is alpha and is set to 1 by default
 
+white :: V4F
+white = rgb 1.0 1.0 1.0
 
-objToMesh :: WavefrontOBJ -> [(Mesh, Maybe Text)]
-objToMesh WavefrontOBJ {..} =
-  [ (toMesh faceGroup, elMtl . head $ faceGroup) | faceGroup <- faces ] where
-  faces = groupBy (\a b -> elMtl a == elMtl b) (V.toList objFaces)
-  toMesh l = Mesh
-    { mAttributes = Map.fromList
-                      [ ("position", A_V4F position)
-                      , ("normal"  , A_V3F normal)
-                      , ("uvw"     , A_V3F texcoord)
-                      ]
-    , mPrimitive  = P_Triangles
-    }   where
-    triangulate (Triangle a b c) = [a, b, c]
-    triangulate (Quad a b c d  ) = [a, b, c, c, d, a]
-    triangulate (Face a b c l) =
-      a : b : c : concatMap (\(x, y) -> [a, x, y]) (zip (c : l) l) -- should work for convex polygons without holes
-    defaultPosition = Location 0 0 0 0
-    defaultNormal   = Normal 0 0 0
-    defaultTexCoord = TexCoord 0 0 0
-    v !- i = v V.!? (i - 1)
-    toVertex FaceIndex {..} =
-      ( let Location x y z w =
-              fromMaybe defaultPosition (objLocations !- faceLocIndex)
-        in  V4 x y z w
-      , let Normal x y z =
-              fromMaybe defaultNormal ((objNormals !-) =<< faceNorIndex)
-        in  V3 x y z
-      , let TexCoord x y z = fromMaybe
-              defaultTexCoord
-              ((objTexCoords !-) =<< faceTexCoordIndex)
-        in  V3 x y z
-      )
-    (position, normal, texcoord) =
-      V.unzip3
-        . V.concat
-        . map (V.fromList . map toVertex . triangulate . elValue)
-        $ l
+yellow :: V4F
+yellow = rgb 1.0 1.0 0.0
 
+orange :: V4F
+orange = rgb 1.0 0.6 0.0
 
-loadOBJ :: String -> IO (Either String ([(Mesh, Maybe Text)], MtlLib))
-loadOBJ fname = fromFile fname >>= \case -- load geometry
-  Left  err                   -> putStrLn err >> return (Left err)
-  Right obj@WavefrontOBJ {..} -> do
-    -- load materials
-    mtlLib <- mconcat . V.toList <$> mapM (readMtl . unpack) objMtlLibs
-    return $ Right (objToMesh obj, mtlLib)
+red :: V4F
+red = rgb 1.0 0.0 0.0
 
-loadOBJToGPU :: String -> IO (Either String ([(GPUMesh, Maybe Text)], MtlLib))
-loadOBJToGPU fname = loadOBJ fname >>= \case
-  Left  err                 -> return $ Left err
-  Right (subModels, mtlLib) -> do
-    gpuSubModels <- forM subModels $ \(mesh, mat) ->
-      LambdaCubeGL.uploadMeshToGPU mesh >>= \a -> return (a, mat)
-    return $ Right (gpuSubModels, mtlLib)
+green :: V4F
+green = rgb 0.0 1.0 0.0
 
-uploadMtlLib :: MtlLib -> IO (Map Text (ObjMaterial,TextureData))
-uploadMtlLib mtlLib = do
-  -- collect used textures
-  let usedTextures = nub . concatMap (maybeToList . mtl_map_Kd) $ Map.elems mtlLib
-      whiteImage = Juicy.ImageRGB8 $ Juicy.generateImage (\_ _ -> Juicy.PixelRGB8 255 255 255) 1 1
-      checkerImage = Juicy.ImageRGB8 $ Juicy.generateImage (\x y -> if mod (x + y) 2 == 0 then Juicy.PixelRGB8 0 0 0 else Juicy.PixelRGB8 255 255 0) 2 2
-  checkerTex <- LambdaCubeGL.uploadTexture2DToGPU checkerImage
-  -- load images and upload to gpu
-  textureLib <- forM (Map.fromList $ zip usedTextures usedTextures) $ \fname -> Juicy.readImage fname >>= \case
-    Left err  -> putStrLn err >> return checkerTex
-    Right img -> LambdaCubeGL.uploadTexture2DToGPU img
-  whiteTex <- LambdaCubeGL.uploadTexture2DToGPU whiteImage
-  -- pair textures and materials
-  return $ (\a -> (a, maybe whiteTex (fromMaybe checkerTex . flip Map.lookup textureLib) . mtl_map_Kd $ a)) <$> mtlLib
+blue :: V4F
+blue = rgb 0.0 0.0 1.0
 
-addOBJToObjectArray :: GLStorage -> String -> [(GPUMesh, Maybe Text)] -> Map Text (ObjMaterial,TextureData) -> IO [LambdaCubeGL.Object]
-addOBJToObjectArray storage slotName objMesh mtlLib = forM objMesh $ \(mesh,mat) -> do
-  obj <- LambdaCubeGL.addMeshToObjectArray storage slotName ["diffuseTexture","diffuseColor"] mesh -- diffuseTexture and diffuseColor values can change on each model
-  case mat >>= flip Map.lookup mtlLib of
-    Nothing -> return ()
-    Just (ObjMaterial{..},t) -> LambdaCubeGL.updateObjectUniforms obj $ do
-      "diffuseTexture" @= return t -- set model's diffuse texture
-      "diffuseColor" @= let (r,g,b) = mtl_Kd in return (V4 r g b mtl_Tr)
-  return obj
+dirToColor :: Direction -> V4F
+dirToColor U = white
+dirToColor D = yellow
+dirToColor L = orange
+dirToColor R = red
+dirToColor F = green
+dirToColor B = blue
 
+data FaceObject = FaceObject {
+    faceObjects :: [LambdaCubeGL.Object],
+    faceDirection :: Direction
+}
 
-----------------------------------------------------
---  See:  http://lambdacube3d.com/getting-started
-----------------------------------------------------
+uploadFaceToGPU :: GLStorage -> [Mesh] -> IO [LambdaCubeGL.Object]
+uploadFaceToGPU storage = mapM (
+    LambdaCubeGL.uploadMeshToGPU 
+    >=> 
+    LambdaCubeGL.addMeshToObjectArray storage "objects" ["color"])
+
+addFaceToScene :: Cube -> FaceObject -> IO ()
+addFaceToScene (Cube fs) (FaceObject objs faceDir) =
+  forM_ cubies $ \(obj, Facet cubieDir) -> do
+    LambdaCubeGL.enableObject obj True
+    LambdaCubeGL.updateObjectUniforms obj $ do
+        "color" @= return (dirToColor cubieDir)
+-- since a square mesh is composed by 2 triangles, we need to make a copy
+-- of each cubie so that it matches the number of triangle meshes
+  where cubies = zip objs (concat . concat $ map (\c -> [c,c]) f) 
+        Face f = fs Map.! faceDir
 
 main :: IO ()
 main = do
@@ -116,38 +82,32 @@ main = do
   let inputSchema = makeSchema $ do
         -- object models
         defObjectArray "objects" Triangles $ do
-          "position" @: Attribute_V4F
-          "normal" @: Attribute_V3F
-          "uvw" @: Attribute_V3F
-        -- defObjectArray "objects" Triangles $ do
-          -- "position"  @: Attribute_V3F
-          -- "uv"        @: Attribute_V3F
+          "position" @: Attribute_V3F
         defUniforms $ do
+          "color" @: V4F
           "time" @: Float
-          "diffuseColor" @:V4F
-          "diffuseTexture" @: FTexture2D
 
   storage <- LambdaCubeGL.allocStorage inputSchema
 
-  -- load OBJ geometry and material descriptions
-  Right (objMesh, mtlLib) <- loadOBJToGPU "cube.obj"
-  -- load materials textures
-  gpuMtlLib <- uploadMtlLib mtlLib
-  -- add OBJ to pipeline input
-  addOBJToObjectArray storage "objects" objMesh gpuMtlLib
+  -- Create a standard Rubik's cube model encapsulated in a data structure
+  let cube = makeCube 3
+  -- Generate meshes for each face of the cube, and pair them with the its
+  -- direction
+  let faces = [(faceMeshes d 3 3, d) | d <- directions]
+ 
+  -- Upload each generated face to the GPU memory and extract the graphics
+  -- object from the IO Monad
+  -- objsList :: [FaceObject]
+  faceObjs <- forM faces $ \(face, faceDir) -> do
+      obj <- uploadFaceToGPU storage face
+      return $ FaceObject obj faceDir
 
-  -- upload geometry to GPU and add to pipeline input
-  -- LambdaCubeGL.uploadMeshToGPU triangleA
-    -- >>= LambdaCubeGL.addMeshToObjectArray storage "objects" []
-  -- LambdaCubeGL.uploadMeshToGPU triangleB >>= LambdaCubeGL.addMeshToObjectArray storage "objects" []
 
-  {-
-    -- load image and upload texture
-    Right img <- Juicy.readImage "logo.png"
-    textureData <- LambdaCubeGL.uploadTexture2DToGPU img
-    -}
+  let scramble = "FLUBUBR'L'FBDBD'"
+  let permutation = parsePermutations scramble
+  let cube' = applyPerm permutation cube
 
-  -- allocate GL pipeline
+  -- Allocate GL pipeline
   renderer <- LambdaCubeGL.allocRenderer pipelineDesc
   LambdaCubeGL.setStorage renderer storage >>= \case -- check schema compatibility
     Just err -> putStrLn err
@@ -157,12 +117,16 @@ main = do
         -- update graphics input
         GLFW.getWindowSize win >>= \(w, h) ->
           LambdaCubeGL.setScreenSize storage (fromIntegral w) (fromIntegral h)
-        LambdaCubeGL.updateUniforms storage $ do
-          -- "diffuseTexture" @= return textureData
+        LambdaCubeGL.updateUniforms storage $
           "time" @= do
             Just t <- GLFW.getTime
             return (realToFrac t :: Float)
-        -- render
+        
+        -- Cube update --
+        mapM_ (addFaceToScene cube') faceObjs
+        -- Cube update --
+
+        -- Render
         LambdaCubeGL.renderFrame renderer
         GLFW.swapBuffers win
         GLFW.pollEvents
@@ -176,16 +140,77 @@ main = do
   GLFW.destroyWindow win
   GLFW.terminate
 
--- geometry data: triangles
-triangleA :: LambdaCubeGL.Mesh
-triangleA = Mesh
+data Square = Square V3F V3F V3F V3F
+
+mapSquare f (Square v1 v2 v3 v4) = Square (fmap f v1) (fmap f v2) (fmap f v3) (fmap f v4) 
+
+pad :: Float
+pad = 0.01
+
+side :: Float
+side = 0.2
+
+faceMeshes :: Direction -> Int -> Int -> [Mesh]
+faceMeshes _ 0 _ = []
+faceMeshes dir rows 0 = faceMeshes dir (rows - 1) 3
+faceMeshes U rows cols = cubie ++ faceMeshes U rows (cols - 1)
+    where cubie = squareMeshes (V3 1.0 1.0 1.0) -- white 
+            $ mapSquare (subtract 0.3) $ Square 
+            (V3 (side * fromIntegral (cols-1) + pad) 0.6 (side * fromIntegral (rows-1) + pad)) -- x1
+            (V3 (side * fromIntegral cols)     0.6 (side * fromIntegral (rows-1) + pad))     -- x2
+            (V3 (side * fromIntegral (cols-1) + pad) 0.6 (side * fromIntegral rows)) -- x3
+            (V3 (side * fromIntegral cols)     0.6 (side * fromIntegral rows)) -- x4
+faceMeshes D rows cols = cubie ++ faceMeshes D rows (cols - 1)
+    where cubie = squareMeshes (V3 1.0 1.0 0.0) -- yellow
+            $ mapSquare (subtract 0.3) $ Square 
+            (V3 (side * fromIntegral (cols-1) + pad) 0.0 (side * fromIntegral (rows-1) + pad)) -- x1
+            (V3 (side * fromIntegral cols)     0.0 (side * fromIntegral (rows-1) + pad))     -- x2
+            (V3 (side * fromIntegral (cols-1) + pad) 0.0 (side * fromIntegral rows)) -- x3
+            (V3 (side * fromIntegral cols)     0.0 (side * fromIntegral rows)) -- x4
+faceMeshes F rows cols = cubie ++ faceMeshes F rows (cols - 1)
+    where cubie = squareMeshes (V3 0.0 1.0 0.0) -- green
+            $ mapSquare (subtract 0.3) $ Square 
+            (V3 (side * fromIntegral (cols-1) + pad) (side * fromIntegral (rows-1) + pad) 0.0) -- x1
+            (V3 (side * fromIntegral cols)     (side * fromIntegral (rows-1) + pad) 0.0)     -- x2
+            (V3 (side * fromIntegral (cols-1) + pad) (side * fromIntegral rows) 0.0) -- x3
+            (V3 (side * fromIntegral cols)     (side * fromIntegral rows) 0.0) -- x4
+faceMeshes B rows cols = cubie ++ faceMeshes B rows (cols - 1)
+    where cubie = squareMeshes (V3 0.0 0.0 1.0) -- blue
+            $ mapSquare (subtract 0.3) $ Square 
+            (V3 (side * fromIntegral (cols-1) + pad) (side * fromIntegral (rows-1) + pad) (0.6)) -- x1
+            (V3 (side * fromIntegral cols)     (side * fromIntegral (rows-1) + pad) (0.6))     -- x2
+            (V3 (side * fromIntegral (cols-1) + pad) (side * fromIntegral rows) (0.6)) -- x3
+            (V3 (side * fromIntegral cols)     (side * fromIntegral rows) (0.6)) -- x4
+-- FOR SOME REASON, AFTER APPLYING A PERSPECTIVE PROJECTION MATRIX, THE
+-- LEFT FACE GETS SWAPPED WITH THE RED FACE, SO I HAD TO FLIP THE DIRECTION
+-- OF THE X AXIS. NEEDS SOME INVESTIGATION
+faceMeshes R rows cols = cubie ++ faceMeshes R rows (cols - 1)
+    where cubie = squareMeshes (V3 1.0 0.0 0.0) -- red
+            $ mapSquare (subtract 0.3) $ Square 
+            (V3 0.0 (side * fromIntegral (cols-1) + pad) (side * fromIntegral (rows-1) + pad)) -- x1
+            (V3 0.0 (side * fromIntegral cols)     (side * fromIntegral (rows-1) + pad))     -- x2
+            (V3 0.0 (side * fromIntegral (cols-1) + pad) (side * fromIntegral rows)) -- x3
+            (V3 0.0 (side * fromIntegral cols)     (side * fromIntegral rows)) -- x4
+faceMeshes L rows cols = cubie ++ faceMeshes L rows (cols - 1)
+    where cubie = squareMeshes (V3 1.0 0.6 0.0) -- orange
+            $ mapSquare (subtract 0.3) $ Square 
+            (V3 0.6 (side * fromIntegral (cols-1) + pad) (side * fromIntegral (rows-1) + pad)) -- x1
+            (V3 0.6 (side * fromIntegral cols)     (side * fromIntegral (rows-1) + pad))     -- x2
+            (V3 0.6 (side * fromIntegral (cols-1) + pad) (side * fromIntegral rows)) -- x3
+            (V3 0.6 (side * fromIntegral cols)     (side * fromIntegral rows)) -- x4
+            
+
+squareMeshes :: V3F -> Square -> [Mesh]
+squareMeshes c (Square v1 v2 v3 v4) = [triangle v1 v2 v3 c , triangle v2 v3 v4 c]
+
+triangle :: V3F -> V3F -> V3F -> V3F -> Mesh
+triangle v1 v2 v3 c = Mesh
   { mAttributes =
     Map.fromList
       [ ( "position"
         , A_V3F $ V.fromList
-          [V3 0.2 0.2 0.2, V3 0.2 (-0.2) (0.2), V3 (-0.2) (-0.2) (-0.2)]
+          [v1, v2, v3]
         )
-      , ("uv", A_V3F $ V.fromList [V3 1 1 1, V3 0 1 1, V3 0 0 1])
       ]
   , mPrimitive  = P_Triangles
   }
