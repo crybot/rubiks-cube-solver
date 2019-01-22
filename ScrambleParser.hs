@@ -3,7 +3,7 @@ module ScrambleParser where
 import Text.Parsec
 import Rubik
 
-direction :: Parsec String st Permutation
+direction :: Parsec String st Direction
 direction = readDir <$> oneOf (concatMap show directions)
 
 turn :: Parsec String st Permutation

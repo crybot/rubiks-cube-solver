@@ -1,5 +1,6 @@
 makeFrame (time :: Float)
           (color :: Vec 4 Float)
+          (angle :: Float)
           (prims :: PrimitiveStream Triangle ((Vec 4 Float)))
 
     = imageFrame (emptyDepthImage 1, emptyColorImage (V4 0.2 0 0.5 1))
@@ -12,10 +13,11 @@ makeFrame (time :: Float)
   where
       projmat = perspective 0.1 100.0 (40 * pi / 180) 1.0
           .*. lookat (V3 (0.0) 1 (-2.0)) (V3 0.0 0.0 0.0) (V3 0.0 1.0 0.0)
-          .*. rotMatrixY (time)
+          .*. rotMatrixY (angle)
 
 
 main = renderFrame $
    makeFrame (Uniform "time")
              (Uniform "color")
+             (Uniform "angle")
              (fetch "objects" ((Attribute "position")))
