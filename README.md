@@ -16,5 +16,5 @@ during the learning phase.
 - Add a solver
 
 ### Preview
-![Alt Text](https://media.giphy.com/media/24mXZtkw1mbTEMTV4h/giphy.gif)
+![Alt Text](https://media.giphy.com/media/6IACCAAg2HmxYFiCyx/giphy.gif)
 
