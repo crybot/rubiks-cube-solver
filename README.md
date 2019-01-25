@@ -1,5 +1,5 @@
 # rubiks-cube-solver
-Learning based Rubik's cube solver
+## A Learning based Rubik's cube solver
 
 At the moment this project is nothing more than a partially working Rubik's cube visualizer.
 The code is modular in the sense that the Cube model and its state transformations are completely independent from the
@@ -8,3 +8,13 @@ The Cube type itself is pretty-printable.
 
 In the later stages of development, the project should be able to solve a scrambled Rubik's cube without human intervention
 during the learning phase.
+
+### TODOs:
+- Implement relative rotations (at the moment they are partially global)
+- Solve aliasing problem: does LambdaCube 3D allow antialiasing?
+- Implement face turn animations
+- Add a solver
+
+### Preview
+![Alt Text](https://media.giphy.com/media/24mXZtkw1mbTEMTV4h/giphy.gif)
+
