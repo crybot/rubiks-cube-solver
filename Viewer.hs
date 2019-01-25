@@ -1,26 +1,32 @@
 {-# LANGUAGE RecordWildCards, PackageImports, LambdaCase, OverloadedStrings #-}
-import Data.Map (Map)
+import           Data.Map                       ( Map )
 import "GLFW-b"  Graphics.UI.GLFW              as GLFW
 import qualified Data.Map                      as Map
 import qualified Data.Vector                   as V
 
 import           LambdaCube.GL                 as LambdaCubeGL -- renderer
 import           LambdaCube.GL.Mesh            as LambdaCubeGL
-import           LambdaCube.GL.Mesh (Mesh)
+import           LambdaCube.GL.Mesh             ( Mesh )
 import           Codec.Picture                 as Juicy
 
 import           Data.Aeson
 import qualified Data.ByteString               as SB
 
-import System.Environment
-import Data.Text (unpack,Text)
-import Data.List (groupBy,nub)
-import Data.Maybe
-import Control.Monad
-import LambdaCube.Linear
-import Rubik
-import ScrambleParser
-import Control.Monad.Extra
+import           System.Environment
+import           Data.Text                      ( unpack
+                                                , Text
+                                                )
+import           Data.List                      ( groupBy
+                                                , nub
+                                                )
+import           Data.Maybe
+import           Control.Monad
+import           LambdaCube.Linear
+import           Rubik
+import           ScrambleParser
+import           Control.Monad.Extra
+import           UserInput
+import           Data.Random.Extras
 
 -- Color utility functions
 rgb :: Float -> Float -> Float -> V4F
@@ -61,21 +67,22 @@ data FaceObject = FaceObject {
 }
 
 uploadFaceToGPU :: GLStorage -> [Mesh] -> IO [LambdaCubeGL.Object]
-uploadFaceToGPU storage = mapM (
-    LambdaCubeGL.uploadMeshToGPU 
-    >=> 
-    LambdaCubeGL.addMeshToObjectArray storage "objects" ["color"])
+uploadFaceToGPU storage = mapM
+  (   LambdaCubeGL.uploadMeshToGPU
+  >=> LambdaCubeGL.addMeshToObjectArray storage "objects" ["color"]
+  )
 
+-- Since a square mesh is composed by 2 triangles, we need to make a copy
+-- of each cubie so that it matches the number of triangle meshes
 addFaceToScene :: Cube -> FaceObject -> IO ()
 addFaceToScene (Cube fs) (FaceObject objs faceDir) =
   forM_ cubies $ \(obj, Facet cubieDir) -> do
     LambdaCubeGL.enableObject obj True
     LambdaCubeGL.updateObjectUniforms obj $ do
-        "color" @= return (dirToColor cubieDir)
--- since a square mesh is composed by 2 triangles, we need to make a copy
--- of each cubie so that it matches the number of triangle meshes
-  where cubies = zip objs (concatMap (\c -> [c,c]) (concat f)) 
-        Face f = fs Map.! faceDir
+      "color" @= return (dirToColor cubieDir)
+ where
+  cubies = zip objs (concatMap (\c -> [c, c]) (concat f))
+  Face f = fs Map.! faceDir
 
 main :: IO ()
 main = do
@@ -89,62 +96,72 @@ main = do
           "position" @: Attribute_V3F
         defUniforms $ do
           "color" @: V4F
-          "angle" @: Float
+          "angleX" @: Float
+          "angleY" @: Float
           "time" @: Float
 
   storage <- LambdaCubeGL.allocStorage inputSchema
 
   -- Create a standard Rubik's cube model encapsulated in a data structure
-  let cube = makeCube n
+  let cube  = makeCube n
   -- Generate meshes for each face of the cube, and pair them with the its
   -- direction
-  let faces = [(faceMeshes d n n, d) | d <- directions]
- 
+  let faces = [ (faceMeshes d n n, d) | d <- directions ]
+
   -- Upload each generated face to the GPU memory and extract the graphics
   -- object from the IO Monad
   -- objsList :: [FaceObject]
   faceObjs <- forM faces $ \(face, faceDir) -> do
-      obj <- uploadFaceToGPU storage face
-      return $ FaceObject obj faceDir
+    obj <- uploadFaceToGPU storage face
+    return $ FaceObject obj faceDir
 
-
-  -- let scramble = "FLUBUBR'L'FBDBD'"
-  let scramble = "U L R U D F"
-  let permutation = parsePermutations scramble
-  let cube' = applyPerm permutation cube
-
-  mapM_ (addFaceToScene cube') faceObjs
-  print cube'
 
   -- Allocate GL pipeline
   renderer <- LambdaCubeGL.allocRenderer pipelineDesc
   LambdaCubeGL.setStorage renderer storage >>= \case -- check schema compatibility
     Just err -> putStrLn err
-    Nothing  -> loop 0.0
+    Nothing  -> loop cube 0.0 0.0 0.0 0.0 ["U", "F", "R", "B", "L", "D"]
      where
-      loop :: Float -> IO ()
-      loop angle = do
-        -- update graphics input
+      loop :: Cube -> Float -> Float -> Float -> Float -> [String] -> IO ()
+      loop cube angleX angleY startTime time perms = do
+        -- Update graphics input
         GLFW.getWindowSize win >>= \(w, h) ->
           LambdaCubeGL.setScreenSize storage (fromIntegral w) (fromIntegral h)
 
-        let keyIsPressed k = fmap (== KeyState'Pressed) $ GLFW.getKey win k
-        angle' <- do
-            left <- keyIsPressed Key'Left
-            right <- keyIsPressed Key'Right
-            if left then return $ angle - 0.1
-            else if right then return $ angle + 0.1
-                 else return angle
+        -- Collect User Input
+        UserInput left right up down <- getUserInput win
 
-        -- angle' <- ifM (keyIsPressed Key'Left) (return $ angle - 0.1) (return angle)
+        let angleX' | up        = angleX + 0.1
+                    | down      = angleX - 0.1
+                    | otherwise = angleX
+        let angleY' | right     = angleY + 0.1
+                    | left      = angleY - 0.1
+                    | otherwise = angleY
 
+        time' <- do
+          Just t <- GLFW.getTime
+          return $ realToFrac t
+
+        -- Update Uniform values
         LambdaCubeGL.updateUniforms storage $ do
-          "time" @= do
-            Just t <- GLFW.getTime
-            return (realToFrac t :: Float)
-          "angle" @= return angle'
-        
+          "time" @= return (realToFrac time' :: Float)
+          "angleX" @= return angleX'
+          "angleY" @= return angleY'
+
         -- Cube update --
+        --
+        -- Update the cube every second
+        let turnCube = time' - startTime >= 1.0
+        let startTime' | turnCube  = time'
+                       | otherwise = startTime
+        let p = parsePermutations $ head perms
+        let cube' | turnCube  = applyPerm p cube
+                  | otherwise = cube
+
+        -- Update face colors and add them to screen
+        mapM_ (addFaceToScene cube') faceObjs
+        print cube'
+        --
         -- Cube update --
 
         -- Render
@@ -154,7 +171,14 @@ main = do
 
         let keyIsPressed k = fmap (== KeyState'Pressed) $ GLFW.getKey win k
         escape <- keyIsPressed Key'Escape
-        if escape then return () else loop angle'
+        if escape
+          then return ()
+          else loop cube'
+                    angleX'
+                    angleY'
+                    startTime'
+                    time'
+                    (tail perms ++ [head perms])
 
   LambdaCubeGL.disposeRenderer renderer
   -- LambdaCubeGL.disposeStorage storage
@@ -163,10 +187,11 @@ main = do
 
 data Square = Square V3F V3F V3F V3F
 
-mapSquare f (Square v1 v2 v3 v4) = Square (fmap f v1) (fmap f v2) (fmap f v3) (fmap f v4) 
+mapSquare f (Square v1 v2 v3 v4) =
+  Square (fmap f v1) (fmap f v2) (fmap f v3) (fmap f v4)
 
 pad :: Float
-pad = 0.01
+pad = 0.00
 
 side :: Float
 side = 0.2
@@ -174,67 +199,149 @@ side = 0.2
 -- TODO: optimize concatenation by moving (++) to the front of the
 -- expression for all cases
 faceMeshes :: Direction -> Int -> Int -> [Mesh]
-faceMeshes _ 0 _ = []
-faceMeshes dir rows 0 = faceMeshes dir (rows - 1) n
-faceMeshes U rows cols = cubie ++ faceMeshes U rows (cols - 1)
-    where cubie = squareMeshes (V3 1.0 1.0 1.0) -- white 
-            $ mapSquare (subtract 0.3) $ Square 
-            (V3 (side * fromIntegral (cols-1) + pad) 0.6 (side * fromIntegral (rows-1) + pad)) -- x1
-            (V3 (side * fromIntegral cols)     0.6 (side * fromIntegral (rows-1) + pad))     -- x2
-            (V3 (side * fromIntegral (cols-1) + pad) 0.6 (side * fromIntegral rows)) -- x3
-            (V3 (side * fromIntegral cols)     0.6 (side * fromIntegral rows)) -- x4
+faceMeshes _   0    _    = []
+faceMeshes dir rows 0    = faceMeshes dir (rows - 1) n
+faceMeshes U   rows cols = cubie ++ faceMeshes U rows (cols - 1)
+ where
+  cubie =
+    squareMeshes (V3 1.0 1.0 1.0) -- white 
+      $ mapSquare (subtract 0.3)
+      $ Square
+          (V3 (side * fromIntegral (cols - 1) + pad)
+              0.6
+              (side * fromIntegral (rows - 1) + pad)
+          ) -- x1
+          (V3 (side * fromIntegral cols)
+              0.6
+              (side * fromIntegral (rows - 1) + pad)
+          )     -- x2
+          (V3 (side * fromIntegral (cols - 1) + pad)
+              0.6
+              (side * fromIntegral rows)
+          ) -- x3
+          (V3 (side * fromIntegral cols) 0.6 (side * fromIntegral rows)) -- x4
 faceMeshes D rows cols = cubie ++ faceMeshes D rows (cols - 1)
-    where cubie = squareMeshes (V3 1.0 1.0 0.0) -- yellow
-            $ mapSquare (subtract 0.3) $ Square 
-            (V3 (side * fromIntegral (cols-1) + pad) 0.0 (side * fromIntegral (3-rows) + pad)) -- x1
-            (V3 (side * fromIntegral cols)     0.0 (side * fromIntegral (3-rows) + pad))     -- x2
-            (V3 (side * fromIntegral (cols-1) + pad) 0.0 (side * fromIntegral (4-rows))) -- x3
-            (V3 (side * fromIntegral cols)     0.0 (side * fromIntegral (4-rows))) -- x4
+ where
+  cubie =
+    squareMeshes (V3 1.0 1.0 0.0) -- yellow
+      $ mapSquare (subtract 0.3)
+      $ Square
+          (V3 (side * fromIntegral (cols - 1) + pad)
+              0.0
+              (side * fromIntegral (3 - rows) + pad)
+          ) -- x1
+          (V3 (side * fromIntegral cols)
+              0.0
+              (side * fromIntegral (3 - rows) + pad)
+          )     -- x2
+          (V3 (side * fromIntegral (cols - 1) + pad)
+              0.0
+              (side * fromIntegral (4 - rows))
+          ) -- x3
+          (V3 (side * fromIntegral cols) 0.0 (side * fromIntegral (4 - rows))) -- x4
 faceMeshes F rows cols = faceMeshes F rows (cols - 1) ++ cubie
-    where cubie = squareMeshes (V3 0.0 1.0 0.0) -- green
-            $ mapSquare (subtract 0.3) $ Square 
-            (V3 (side * fromIntegral (3-cols) + pad) (side * fromIntegral (3-rows) + pad) 0.0) -- x1
-            (V3 (side * fromIntegral (4-cols))     (side * fromIntegral (3-rows) + pad) 0.0)     -- x2
-            (V3 (side * fromIntegral (3-cols) + pad) (side * fromIntegral (4-rows)) 0.0) -- x3
-            (V3 (side * fromIntegral (4-cols))     (side * fromIntegral (4-rows)) 0.0) -- x4
+ where
+  cubie =
+    squareMeshes (V3 0.0 1.0 0.0) -- green
+      $ mapSquare (subtract 0.3)
+      $ Square
+          (V3 (side * fromIntegral (3 - cols) + pad)
+              (side * fromIntegral (3 - rows) + pad)
+              0.0
+          ) -- x1
+          (V3 (side * fromIntegral (4 - cols))
+              (side * fromIntegral (3 - rows) + pad)
+              0.0
+          )     -- x2
+          (V3 (side * fromIntegral (3 - cols) + pad)
+              (side * fromIntegral (4 - rows))
+              0.0
+          ) -- x3
+          (V3 (side * fromIntegral (4 - cols))
+              (side * fromIntegral (4 - rows))
+              0.0
+          ) -- x4
 faceMeshes B rows cols = cubie ++ faceMeshes B rows (cols - 1)
-    where cubie = squareMeshes (V3 0.0 0.0 1.0) -- blue
-            $ mapSquare (subtract 0.3) $ Square 
-            (V3 (side * fromIntegral (cols-1) + pad) (side * fromIntegral (3-rows) + pad) 0.6) -- x1
-            (V3 (side * fromIntegral (cols))     (side * fromIntegral (3-rows) + pad) 0.6)     -- x2
-            (V3 (side * fromIntegral (cols-1) + pad) (side * fromIntegral (4-rows)) 0.6) -- x3
-            (V3 (side * fromIntegral (cols))     (side * fromIntegral (4-rows)) 0.6) -- x4
+ where
+  cubie =
+    squareMeshes (V3 0.0 0.0 1.0) -- blue
+      $ mapSquare (subtract 0.3)
+      $ Square
+          (V3 (side * fromIntegral (cols - 1) + pad)
+              (side * fromIntegral (3 - rows) + pad)
+              0.6
+          ) -- x1
+          (V3 (side * fromIntegral (cols))
+              (side * fromIntegral (3 - rows) + pad)
+              0.6
+          )     -- x2
+          (V3 (side * fromIntegral (cols - 1) + pad)
+              (side * fromIntegral (4 - rows))
+              0.6
+          ) -- x3
+          (V3 (side * fromIntegral (cols)) (side * fromIntegral (4 - rows)) 0.6) -- x4
 -- FOR SOME REASON, AFTER APPLYING A PERSPECTIVE PROJECTION MATRIX, THE
 -- LEFT FACE GETS SWAPPED WITH THE RED FACE, SO I HAD TO FLIP THE DIRECTION
 -- OF THE X AXIS. NEEDS SOME INVESTIGATION
 faceMeshes R rows cols = cubie ++ faceMeshes R rows (cols - 1)
-    where cubie = squareMeshes (V3 1.0 0.6 0.0) -- orange
-            $ mapSquare (subtract 0.3) $ Square 
-            (V3 0.0 (side * fromIntegral (rows-1) + pad) (side * fromIntegral (3 - cols) + pad)) -- x1
-            (V3 0.0 (side * fromIntegral rows)     (side * fromIntegral (3 - cols) + pad))     -- x2
-            (V3 0.0 (side * fromIntegral (rows-1) + pad) (side * fromIntegral (4 - cols))) -- x3
-            (V3 0.0 (side * fromIntegral rows)     (side * fromIntegral (4 - cols))) -- x4
+ where
+  cubie =
+    squareMeshes (V3 1.0 0.6 0.0) -- orange
+      $ mapSquare (subtract 0.3)
+      $ Square
+          (V3 0.0
+              (side * fromIntegral (rows - 1) + pad)
+              (side * fromIntegral (3 - cols) + pad)
+          ) -- x1
+          (V3 0.0
+              (side * fromIntegral rows)
+              (side * fromIntegral (3 - cols) + pad)
+          )     -- x2
+          (V3 0.0
+              (side * fromIntegral (rows - 1) + pad)
+              (side * fromIntegral (4 - cols))
+          ) -- x3
+          (V3 0.0 (side * fromIntegral rows) (side * fromIntegral (4 - cols))) -- x4
 faceMeshes L rows cols = faceMeshes L rows (cols - 1) ++ cubie
-    where cubie = squareMeshes (V3 1.0 0.6 0.0) -- orange
-            $ mapSquare (subtract 0.3) $ Square 
-            (V3 0.6 (side * fromIntegral (3 - rows) + pad) (side * fromIntegral (3 - cols) + pad)) -- x1
-            (V3 0.6 (side * fromIntegral (4 - rows))     (side * fromIntegral (3 - cols) + pad))     -- x2
-            (V3 0.6 (side * fromIntegral (3 - rows) + pad) (side * fromIntegral (4 - cols))) -- x3
-            (V3 0.6 (side * fromIntegral (4 - rows))     (side * fromIntegral (4 - cols))) -- x4
-            
+ where
+  cubie =
+    squareMeshes (V3 1.0 0.6 0.0) -- orange
+      $ mapSquare (subtract 0.3)
+      $ Square
+          (V3 0.6
+              (side * fromIntegral (3 - rows) + pad)
+              (side * fromIntegral (3 - cols) + pad)
+          ) -- x1
+          (V3 0.6
+              (side * fromIntegral (4 - rows))
+              (side * fromIntegral (3 - cols) + pad)
+          )     -- x2
+          (V3 0.6
+              (side * fromIntegral (3 - rows) + pad)
+              (side * fromIntegral (4 - cols))
+          ) -- x3
+          (V3 0.6
+              (side * fromIntegral (4 - rows))
+              (side * fromIntegral (4 - cols))
+          ) -- x4
+
 
 squareMeshes :: V3F -> Square -> [Mesh]
-squareMeshes c (Square v1 v2 v3 v4) = [triangle v1 v2 v3 c , triangle v2 v3 v4 c]
+squareMeshes c (Square v1 v2 v3 v4) =
+  [triangle v1 v2 v3 c, triangle v2 v3 v4 c]
+
+-- TODO: replace squareMeshes and use indices
+square :: V3F -> V3F -> V3F -> V3F -> Mesh
+square v1 v2 v3 v4 = Mesh
+  { mAttributes = Map.fromList
+                    [("position", A_V3F $ V.fromList [v1, v2, v3, v2, v3, v4])]
+  , mPrimitive  = P_Triangles
+  }
+
 
 triangle :: V3F -> V3F -> V3F -> V3F -> Mesh
 triangle v1 v2 v3 c = Mesh
-  { mAttributes =
-    Map.fromList
-      [ ( "position"
-        , A_V3F $ V.fromList
-          [v1, v2, v3]
-        )
-      ]
+  { mAttributes = Map.fromList [("position", A_V3F $ V.fromList [v1, v2, v3])]
   , mPrimitive  = P_Triangles
   }
 

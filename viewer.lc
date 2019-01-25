@@ -1,23 +1,43 @@
 makeFrame (time :: Float)
           (color :: Vec 4 Float)
-          (angle :: Float)
+          (angleX :: Float)
+          (angleY :: Float)
           (prims :: PrimitiveStream Triangle ((Vec 4 Float)))
 
     = imageFrame (emptyDepthImage 1, emptyColorImage (V4 0.2 0 0.5 1))
   `overlay`
       prims
-    & mapPrimitives (\((p)) -> (projmat *. p, color))
-    -- & mapPrimitives (\(p, c) -> (rotMatrixX(-pi/8) *. rotMatrixY (time) *. p, c))
-    & rasterizePrimitives (TriangleCtx CullNone PolygonFill NoOffset LastVertex) ((Smooth))
+    & mapPrimitives (\((p)) -> (projmat *. p, p, color))
+    & rasterizePrimitives (TriangleCtx CullNone PolygonFill NoOffset LastVertex) (Smooth, Smooth)
+    & mapFragments(\(p, c) -> ((addShadow (projmat *. p) . addBorders p $ c)) ) 
     & accumulateWith (DepthOp Less True, ColorOp NoBlending (V4 True True True True))
   where
       projmat = perspective 0.1 100.0 (40 * pi / 180) 1.0
-          .*. lookat (V3 (0.0) 1 (-2.0)) (V3 0.0 0.0 0.0) (V3 0.0 1.0 0.0)
-          .*. rotMatrixY (angle)
+          .*. lookat (V3 0.0 1 (-2.0)) (V3 0.0 0.0 0.0) (V3 0.0 1.0 0.0)
+          .*. rotMatrixX angleX
+          .*. rotMatrixY angleY
+      addShadow p c = c *! (p%y/1.5 + 0.9)
+      addBorders p c = c * white *! k
+        where width = 0.005
+              k = if
+                    abs(p%x - 0.295) <= width
+                || abs(p%x - 0.1) <= width
+                || abs(p%x + 0.1) <= width
+                || abs(p%x + 0.295) <= width
+                || abs(p%y - 0.295) <= width
+                || abs(p%y - 0.1) <= width
+                || abs(p%y + 0.1) <= width
+                || abs(p%y + 0.295) <= width
+                || abs(p%z - 0.295) <= width
+                || abs(p%z - 0.1) <= width
+                || abs(p%z + 0.1) <= width
+                || abs(p%z + 0.295) <= width
+                then 0.0 else 1.0
 
 
 main = renderFrame $
    makeFrame (Uniform "time")
              (Uniform "color")
-             (Uniform "angle")
+             (Uniform "angleX")
+             (Uniform "angleY")
              (fetch "objects" ((Attribute "position")))
