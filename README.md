@@ -12,9 +12,8 @@ during the learning phase.
 ### TODOs:
 - Implement relative rotations (at the moment they are partially global)
 - Solve aliasing problem: does LambdaCube 3D allow antialiasing?
-- Implement face turn animations
 - Add a solver
 
 ### Preview
-![Alt Text](https://media.giphy.com/media/6IACCAAg2HmxYFiCyx/giphy.gif)
+![Alt Text](https://media.giphy.com/media/Bp1oNncOk5of7xuQvK/giphy.gif)
 
