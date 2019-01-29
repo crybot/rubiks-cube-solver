@@ -3,10 +3,12 @@ import           Data.Map                       ( Map )
 import "GLFW-b"  Graphics.UI.GLFW              as GLFW
 import qualified Data.Map                      as Map
 import qualified Data.Vector                   as V
+import Data.Int
 
 import           LambdaCube.GL                 as LambdaCubeGL -- renderer
 import           LambdaCube.GL.Mesh            as LambdaCubeGL
 import           LambdaCube.GL.Mesh             ( Mesh )
+import           LambdaCube.GL.Input
 import           Codec.Picture                 as Juicy
 
 import           Data.Aeson
@@ -17,6 +19,7 @@ import           Data.Text                      ( unpack
                                                 , Text
                                                 )
 import           Data.List                      ( groupBy
+                                                , elemIndex
                                                 , nub
                                                 )
 import           Data.Maybe
@@ -26,7 +29,6 @@ import           Rubik
 import           ScrambleParser
 import           Control.Monad.Extra
 import           UserInput
-import           Data.Random.Extras
 
 -- Color utility functions
 rgb :: Float -> Float -> Float -> V4F
@@ -98,6 +100,8 @@ main = do
           "color" @: V4F
           "angleX" @: Float
           "angleY" @: Float
+          "rotatingFace" @: Float
+          "faceAngle" @: Float
           "time" @: Float
 
   storage <- LambdaCubeGL.allocStorage inputSchema
@@ -114,81 +118,156 @@ main = do
   faceObjs <- forM faces $ \(face, faceDir) -> do
     obj <- uploadFaceToGPU storage face
     return $ FaceObject obj faceDir
+    
+  mapM_ (addFaceToScene cube) faceObjs
 
-
+  time <- getTimeF
+  let animation = FaceAnimation U 0.0 0.0 0.0 (-pi / 2) 0.65
   -- Allocate GL pipeline
   renderer <- LambdaCubeGL.allocRenderer pipelineDesc
   LambdaCubeGL.setStorage renderer storage >>= \case -- check schema compatibility
     Just err -> putStrLn err
-    Nothing  -> loop cube 0.0 0.0 0.0 0.0 ["U", "F", "R", "B", "L", "D"]
-     where
-      loop :: Cube -> Float -> Float -> Float -> Float -> [String] -> IO ()
-      loop cube angleX angleY startTime time perms = do
-        -- Update graphics input
-        GLFW.getWindowSize win >>= \(w, h) ->
-          LambdaCubeGL.setScreenSize storage (fromIntegral w) (fromIntegral h)
-
-        -- Collect User Input
-        UserInput left right up down <- getUserInput win
-
-        let angleX' | up        = angleX + 0.1
-                    | down      = angleX - 0.1
-                    | otherwise = angleX
-        let angleY' | right     = angleY + 0.1
-                    | left      = angleY - 0.1
-                    | otherwise = angleY
-
-        time' <- do
-          Just t <- GLFW.getTime
-          return $ realToFrac t
-
-        -- Update Uniform values
-        LambdaCubeGL.updateUniforms storage $ do
-          "time" @= return (realToFrac time' :: Float)
-          "angleX" @= return angleX'
-          "angleY" @= return angleY'
-
-        -- Cube update --
-        --
-        -- Update the cube every second
-        let turnCube = time' - startTime >= 1.0
-        let startTime' | turnCube  = time'
-                       | otherwise = startTime
-        let p = parsePermutations $ head perms
-        let cube' | turnCube  = applyPerm p cube
-                  | otherwise = cube
-
-        -- Update face colors and add them to screen
-        mapM_ (addFaceToScene cube') faceObjs
-        print cube'
-        --
-        -- Cube update --
-
-        -- Render
-        LambdaCubeGL.renderFrame renderer
-        GLFW.swapBuffers win
-        GLFW.pollEvents
-
-        let keyIsPressed k = fmap (== KeyState'Pressed) $ GLFW.getKey win k
-        escape <- keyIsPressed Key'Escape
-        if escape
-          then return ()
-          else loop cube'
-                    angleX'
-                    angleY'
-                    startTime'
-                    time'
-                    (tail perms ++ [head perms])
-
+    Nothing  -> renderLoop win renderer storage time animation cube faceObjs 0.0 0.0 ["U", "R", "U'", "L'", "U", "R'", "U'", "L"]
   LambdaCubeGL.disposeRenderer renderer
   -- LambdaCubeGL.disposeStorage storage
   GLFW.destroyWindow win
   GLFW.terminate
 
+data FaceAnimation = FaceAnimation {
+    face :: Direction,
+    startAngle :: Float,
+    actualAngle :: Float,
+    elapsedTime :: Float,
+    endAngle :: Float,
+    period :: Float 
+}
+
+render :: Window -> GLRenderer -> IO ()
+render win renderer = do
+    LambdaCubeGL.renderFrame renderer
+    GLFW.swapBuffers win
+    GLFW.pollEvents
+
+easing :: Float -> Float -> Float -> Float -> Float -> Float
+-- easing start actual end elapsed period = start + end*elapsed/period
+-- quadratic easing out
+-- easing start actual end elapsed period = start - end*perc*(perc-2)
+-- quadratic easing in/out
+easing start actual end elapsed period = 
+    if perc < 1 
+    then start + end/2*perc*perc 
+    else let t = perc - 1
+             in start - end/2 * (t*(t-2) - 1)
+    where perc = elapsed / (period / 2)
+
+getTimeF :: IO Float
+getTimeF = do
+  Just t <- GLFW.getTime
+  return $ realToFrac t
+
+stepAnimation :: Float -> Float -> FaceAnimation -> FaceAnimation
+stepAnimation t1 t2 animation@FaceAnimation {..}
+  | elapsedTime >= period = animation
+  | otherwise =
+    FaceAnimation face startAngle newAngle elapsedTime' endAngle period
+  where
+    elapsedTime' = elapsedTime + (t2 - t1)
+    newAngle = easing startAngle actualAngle endAngle elapsedTime period
+
+isAnimationOver :: FaceAnimation -> Bool
+isAnimationOver FaceAnimation {..} = elapsedTime >= period
+
+repeatAnimation :: FaceAnimation -> FaceAnimation
+repeatAnimation animation@FaceAnimation {..}
+  | isAnimationOver animation =
+    FaceAnimation face startAngle startAngle 0.0 endAngle period
+  | otherwise = animation
+
+renderLoop ::
+     Window
+  -> GLRenderer
+  -> GLStorage
+  -> Float
+  -> FaceAnimation
+  -> Cube
+  -> [FaceObject]
+  -> Float
+  -> Float
+  -> [String]
+  -> IO ()
+renderLoop win renderer storage time animation cube faceObjs angleX angleY perms
+  -- Update graphics input
+ = do
+  GLFW.getWindowSize win >>= \(w, h) ->
+    LambdaCubeGL.setScreenSize storage (fromIntegral w) (fromIntegral h)
+  -- Collect User Input
+  UserInput left right up down <- getUserInput win
+
+  let angleX'
+        | up = angleX + 0.1
+        | down = angleX - 0.1
+        | otherwise = angleX
+  let angleY'
+        | right = angleY + 0.1
+        | left = angleY - 0.1
+        | otherwise = angleY
+  time' <- getTimeF
+  let animation'@FaceAnimation {..} = stepAnimation time time' animation
+  let (p, rotatingFace, rotation) = parseTurn (head perms)
+
+  -- Update Uniform values
+  LambdaCubeGL.updateUniforms storage $ do
+    "time" @= return time'
+    "angleX" @= return angleX'
+    "angleY" @= return angleY'
+    "rotatingFace" @= do
+        let f = fromMaybe (-1) (rotatingFace `elemIndex` directions)
+        print f
+        return (fromIntegral f :: Float)
+    "faceAngle" @= return (case rotation of 
+                                  Clockwise -> actualAngle :: Float
+                                  CounterClockwise -> -actualAngle :: Float)
+
+  render win renderer
+  --             --
+  -- Cube update --
+  let p = parsePermutations (head perms)
+  let turnCube = isAnimationOver animation'
+  let perms' | isAnimationOver animation' = tail perms ++ [head perms]
+             | otherwise = perms
+  let cube'
+        | turnCube = applyPerm p cube
+        | otherwise = cube
+  -- Update face colors and add them to screen
+  mapM_ (addFaceToScene cube') faceObjs
+
+  when (isAnimationOver animation') (print cube') -- DEBUG
+
+  -- Cube update --
+  --             --
+  let keyIsPressed k = fmap (== KeyState'Pressed) $ GLFW.getKey win k
+  escape <- keyIsPressed Key'Escape
+  if escape
+    then return ()
+    else renderLoop
+           win
+           renderer
+           storage
+           time'
+           (repeatAnimation animation')
+           cube'
+           faceObjs
+           angleX'
+           angleY'
+           perms'
+
+
 data Square = Square V3F V3F V3F V3F
 
 mapSquare f (Square v1 v2 v3 v4) =
   Square (fmap f v1) (fmap f v2) (fmap f v3) (fmap f v4)
+
+reverseSquare (Square v1 v2 v3 v4) = Square v2 v1 v4 v3
 
 pad :: Float
 pad = 0.00
@@ -224,7 +303,7 @@ faceMeshes D rows cols = cubie ++ faceMeshes D rows (cols - 1)
  where
   cubie =
     squareMeshes (V3 1.0 1.0 0.0) -- yellow
-      $ mapSquare (subtract 0.3)
+      $ reverseSquare . mapSquare (subtract 0.3)
       $ Square
           (V3 (side * fromIntegral (cols - 1) + pad)
               0.0
@@ -265,7 +344,7 @@ faceMeshes B rows cols = cubie ++ faceMeshes B rows (cols - 1)
  where
   cubie =
     squareMeshes (V3 0.0 0.0 1.0) -- blue
-      $ mapSquare (subtract 0.3)
+      $ reverseSquare . mapSquare (subtract 0.3)
       $ Square
           (V3 (side * fromIntegral (cols - 1) + pad)
               (side * fromIntegral (3 - rows) + pad)
@@ -306,7 +385,7 @@ faceMeshes L rows cols = faceMeshes L rows (cols - 1) ++ cubie
  where
   cubie =
     squareMeshes (V3 1.0 0.6 0.0) -- orange
-      $ mapSquare (subtract 0.3)
+      $ reverseSquare . mapSquare (subtract 0.3)
       $ Square
           (V3 0.6
               (side * fromIntegral (3 - rows) + pad)
@@ -328,7 +407,7 @@ faceMeshes L rows cols = faceMeshes L rows (cols - 1) ++ cubie
 
 squareMeshes :: V3F -> Square -> [Mesh]
 squareMeshes c (Square v1 v2 v3 v4) =
-  [triangle v1 v2 v3 c, triangle v2 v3 v4 c]
+  [triangle v1 v2 v3 c, triangle v4 v3 v2 c]
 
 -- TODO: replace squareMeshes and use indices
 square :: V3F -> V3F -> V3F -> V3F -> Mesh
