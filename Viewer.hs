@@ -123,11 +123,13 @@ main = do
 
   time <- getTimeF
   let animation = FaceAnimation U 0.0 0.0 0.0 (-pi / 2) 0.65
+  let perms = words "U R F L B D L' R' B U D' B'"
+  let circlePerm = ["U", "R", "U'", "L'", "U", "R'", "U'", "L"]
   -- Allocate GL pipeline
   renderer <- LambdaCubeGL.allocRenderer pipelineDesc
   LambdaCubeGL.setStorage renderer storage >>= \case -- check schema compatibility
     Just err -> putStrLn err
-    Nothing  -> renderLoop win renderer storage time animation cube faceObjs 0.0 0.0 ["U", "R", "U'", "L'", "U", "R'", "U'", "L"]
+    Nothing  -> renderLoop win renderer storage time animation cube faceObjs 0.0 0.0 perms
   LambdaCubeGL.disposeRenderer renderer
   -- LambdaCubeGL.disposeStorage storage
   GLFW.destroyWindow win
@@ -203,7 +205,7 @@ renderLoop win renderer storage time animation cube faceObjs angleX angleY perms
   -- Collect User Input
   UserInput left right up down <- getUserInput win
 
-  let angleX'
+  let angleX' -- NOT USED ANYMORE
         | up = angleX + 0.1
         | down = angleX - 0.1
         | otherwise = angleX
@@ -211,8 +213,14 @@ renderLoop win renderer storage time animation cube faceObjs angleX angleY perms
         | right = angleY + 0.1
         | left = angleY - 0.1
         | otherwise = angleY
+  let period'
+        | up = max (period animation -0.01) 0.1
+        | down = min (period animation + 0.01) 4
+        | otherwise = period animation
   time' <- getTimeF
-  let animation'@FaceAnimation {..} = stepAnimation time time' animation
+  let animation'@FaceAnimation {..} = (stepAnimation time time' animation) {
+                                                                period = period'
+                                                                           }
   let (p, rotatingFace, rotation) = parseTurn (head perms)
 
   -- Update Uniform values
