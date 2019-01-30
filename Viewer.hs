@@ -32,25 +32,25 @@ import           UserInput
 
 -- Color utility functions
 rgb :: Float -> Float -> Float -> V4F
-rgb r g b = V4 r g b 1.0 -- the 4th channel is alpha and is set to 1 by default
+rgb r g b = fmap (/255) $ V4 r g b 255 -- the 4th channel is alpha and is set to 1 by default
 
 white :: V4F
-white = rgb 1.0 1.0 1.0
+white = rgb 255 255 255
 
 yellow :: V4F
-yellow = rgb 1.0 1.0 0.0
+yellow = rgb 255 213 0
 
 orange :: V4F
-orange = rgb 1.0 0.6 0.0
+orange = rgb 255 88 0
 
 red :: V4F
-red = rgb 1.0 0.0 0.0
+red = rgb 187 15 15
 
 green :: V4F
-green = rgb 0.0 1.0 0.0
+green = rgb 0 165 72
 
 blue :: V4F
-blue = rgb 0.0 0.0 1.0
+blue = rgb 0 70 173
 
 dirToColor :: Direction -> V4F
 dirToColor U = white
@@ -122,7 +122,7 @@ main = do
   mapM_ (addFaceToScene cube) faceObjs
 
   time <- getTimeF
-  let animation = FaceAnimation U 0.0 0.0 0.0 (-pi / 2) 0.65
+  let animation = FaceAnimation 0.0 0.0 0.0 (-pi / 2) 0.65
   let perms = words "U R F L B D L' R' B U D' B'"
   let circlePerm = ["U", "R", "U'", "L'", "U", "R'", "U'", "L"]
   -- Allocate GL pipeline
@@ -136,7 +136,6 @@ main = do
   GLFW.terminate
 
 data FaceAnimation = FaceAnimation {
-    face :: Direction,
     startAngle :: Float,
     actualAngle :: Float,
     elapsedTime :: Float,
@@ -170,8 +169,7 @@ getTimeF = do
 stepAnimation :: Float -> Float -> FaceAnimation -> FaceAnimation
 stepAnimation t1 t2 animation@FaceAnimation {..}
   | elapsedTime >= period = animation
-  | otherwise =
-    FaceAnimation face startAngle newAngle elapsedTime' endAngle period
+  | otherwise = animation { actualAngle=newAngle, elapsedTime=elapsedTime'}
   where
     elapsedTime' = elapsedTime + (t2 - t1)
     newAngle = easing startAngle actualAngle endAngle elapsedTime period
@@ -180,9 +178,8 @@ isAnimationOver :: FaceAnimation -> Bool
 isAnimationOver FaceAnimation {..} = elapsedTime >= period
 
 repeatAnimation :: FaceAnimation -> FaceAnimation
-repeatAnimation animation@FaceAnimation {..}
-  | isAnimationOver animation =
-    FaceAnimation face startAngle startAngle 0.0 endAngle period
+repeatAnimation animation
+  | isAnimationOver animation = animation { elapsedTime = 0.0 }
   | otherwise = animation
 
 renderLoop ::
@@ -291,8 +288,7 @@ faceMeshes dir rows 0    = faceMeshes dir (rows - 1) n
 faceMeshes U   rows cols = cubie ++ faceMeshes U rows (cols - 1)
  where
   cubie =
-    squareMeshes (V3 1.0 1.0 1.0) -- white 
-      $ mapSquare (subtract 0.3)
+    squareMeshes $ mapSquare (subtract 0.3)
       $ Square
           (V3 (side * fromIntegral (cols - 1) + pad)
               0.6
@@ -310,8 +306,7 @@ faceMeshes U   rows cols = cubie ++ faceMeshes U rows (cols - 1)
 faceMeshes D rows cols = cubie ++ faceMeshes D rows (cols - 1)
  where
   cubie =
-    squareMeshes (V3 1.0 1.0 0.0) -- yellow
-      $ reverseSquare . mapSquare (subtract 0.3)
+    squareMeshes $ reverseSquare . mapSquare (subtract 0.3)
       $ Square
           (V3 (side * fromIntegral (cols - 1) + pad)
               0.0
@@ -329,8 +324,7 @@ faceMeshes D rows cols = cubie ++ faceMeshes D rows (cols - 1)
 faceMeshes F rows cols = faceMeshes F rows (cols - 1) ++ cubie
  where
   cubie =
-    squareMeshes (V3 0.0 1.0 0.0) -- green
-      $ mapSquare (subtract 0.3)
+    squareMeshes $ mapSquare (subtract 0.3)
       $ Square
           (V3 (side * fromIntegral (3 - cols) + pad)
               (side * fromIntegral (3 - rows) + pad)
@@ -351,8 +345,7 @@ faceMeshes F rows cols = faceMeshes F rows (cols - 1) ++ cubie
 faceMeshes B rows cols = cubie ++ faceMeshes B rows (cols - 1)
  where
   cubie =
-    squareMeshes (V3 0.0 0.0 1.0) -- blue
-      $ reverseSquare . mapSquare (subtract 0.3)
+    squareMeshes $ reverseSquare . mapSquare (subtract 0.3)
       $ Square
           (V3 (side * fromIntegral (cols - 1) + pad)
               (side * fromIntegral (3 - rows) + pad)
@@ -368,13 +361,12 @@ faceMeshes B rows cols = cubie ++ faceMeshes B rows (cols - 1)
           ) -- x3
           (V3 (side * fromIntegral (cols)) (side * fromIntegral (4 - rows)) 0.6) -- x4
 -- FOR SOME REASON, AFTER APPLYING A PERSPECTIVE PROJECTION MATRIX, THE
--- LEFT FACE GETS SWAPPED WITH THE RED FACE, SO I HAD TO FLIP THE DIRECTION
+-- LEFT FACE GETS SWAPPED WITH THE RIGHT FACE, SO I HAD TO FLIP THE DIRECTION
 -- OF THE X AXIS. NEEDS SOME INVESTIGATION
 faceMeshes R rows cols = cubie ++ faceMeshes R rows (cols - 1)
  where
   cubie =
-    squareMeshes (V3 1.0 0.6 0.0) -- orange
-      $ mapSquare (subtract 0.3)
+    squareMeshes $ mapSquare (subtract 0.3)
       $ Square
           (V3 0.0
               (side * fromIntegral (rows - 1) + pad)
@@ -392,8 +384,7 @@ faceMeshes R rows cols = cubie ++ faceMeshes R rows (cols - 1)
 faceMeshes L rows cols = faceMeshes L rows (cols - 1) ++ cubie
  where
   cubie =
-    squareMeshes (V3 1.0 0.6 0.0) -- orange
-      $ reverseSquare . mapSquare (subtract 0.3)
+    squareMeshes $ reverseSquare . mapSquare (subtract 0.3)
       $ Square
           (V3 0.6
               (side * fromIntegral (3 - rows) + pad)
@@ -413,9 +404,9 @@ faceMeshes L rows cols = faceMeshes L rows (cols - 1) ++ cubie
           ) -- x4
 
 
-squareMeshes :: V3F -> Square -> [Mesh]
-squareMeshes c (Square v1 v2 v3 v4) =
-  [triangle v1 v2 v3 c, triangle v4 v3 v2 c]
+squareMeshes :: Square -> [Mesh]
+squareMeshes (Square v1 v2 v3 v4) =
+  [triangle v1 v2 v3 , triangle v4 v3 v2]
 
 -- TODO: replace squareMeshes and use indices
 square :: V3F -> V3F -> V3F -> V3F -> Mesh
@@ -426,8 +417,8 @@ square v1 v2 v3 v4 = Mesh
   }
 
 
-triangle :: V3F -> V3F -> V3F -> V3F -> Mesh
-triangle v1 v2 v3 c = Mesh
+triangle :: V3F -> V3F -> V3F -> Mesh
+triangle v1 v2 v3 = Mesh
   { mAttributes = Map.fromList [("position", A_V3F $ V.fromList [v1, v2, v3])]
   , mPrimitive  = P_Triangles
   }
