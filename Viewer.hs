@@ -1,67 +1,28 @@
 {-# LANGUAGE RecordWildCards, PackageImports, LambdaCase, OverloadedStrings #-}
-import           Data.Map                       ( Map )
 import "GLFW-b"  Graphics.UI.GLFW              as GLFW
 import qualified Data.Map                      as Map
-import qualified Data.Vector                   as V
-import Data.Int
 
 import           LambdaCube.GL                 as LambdaCubeGL -- renderer
 import           LambdaCube.GL.Mesh            as LambdaCubeGL
-import           LambdaCube.GL.Mesh             ( Mesh )
 import           LambdaCube.GL.Input
-import           Codec.Picture                 as Juicy
+import           LambdaCube.Linear
 
 import           Data.Aeson
 import qualified Data.ByteString               as SB
-
-import           System.Environment
-import           Data.Text                      ( unpack
-                                                , Text
-                                                )
-import           Data.List                      ( groupBy
-                                                , elemIndex
-                                                , nub
-                                                )
+import           Data.List                      ( elemIndex )
 import           Data.Maybe
-import           Control.Monad
-import           LambdaCube.Linear
-import           Rubik
+
 import           ScrambleParser
-import           Control.Monad.Extra
+import           FaceAnimation
+import           CubeGraphics
 import           UserInput
+import           Color
+import           Rubik
 
--- Color utility functions
-rgb :: Float -> Float -> Float -> V4F
-rgb r g b = fmap (/255) $ V4 r g b 255 -- the 4th channel is alpha and is set to 1 by default
-
-white :: V4F
-white = rgb 255 255 255
-
-yellow :: V4F
-yellow = rgb 255 213 0
-
-orange :: V4F
-orange = rgb 255 88 0
-
-red :: V4F
-red = rgb 187 15 15
-
-green :: V4F
-green = rgb 0 165 72
-
-blue :: V4F
-blue = rgb 0 70 173
-
-dirToColor :: Direction -> V4F
-dirToColor U = white
-dirToColor D = yellow
-dirToColor L = orange
-dirToColor R = red
-dirToColor F = green
-dirToColor B = blue
-
-n :: Int
-n = 3
+import           Control.Monad
+import           Control.Monad.Reader
+import           Control.Monad.State
+import           Control.Concurrent
 
 data FaceObject = FaceObject {
     faceObjects :: [LambdaCubeGL.Object],
@@ -86,6 +47,137 @@ addFaceToScene (Cube fs) (FaceObject objs faceDir) =
   cubies = zip objs (concatMap (\c -> [c, c]) (concat f))
   Face f = fs Map.! faceDir
 
+dirToColor :: Direction -> V4F
+dirToColor U = white
+dirToColor D = yellow
+dirToColor L = orange
+dirToColor R = red
+dirToColor F = green
+dirToColor B = blue
+
+getTimeF :: IO Float
+getTimeF = do
+  Just t <- GLFW.getTime
+  return $ realToFrac t
+
+-- Graphics' Environment which is passed to the the rendering functions
+data Env = Env { window :: Window,
+                 renderer :: GLRenderer,
+                 storage :: GLStorage,
+                 faceObjs :: [FaceObject]}
+
+-- World's state
+data World = World { cube :: Cube,
+                     angleX :: Float,
+                     angleY :: Float,
+                     perms :: [String],
+                     animation :: FaceAnimation,
+                     time :: Float
+                   }
+
+-- GraphicContext is the Monad in which the render loop performs.
+-- It holds a readonly rendering environment and a boolean state that describes
+-- whether the game is paused or not
+type GraphicContext m = ReaderT Env (StateT Bool m)
+
+runGraphicContext :: (Monad m) => GraphicContext m t -> Env -> m t
+runGraphicContext context env = evalStateT (runReaderT context env) False
+
+
+render :: Window -> GLRenderer -> IO ()
+render win renderer = do
+  LambdaCubeGL.renderFrame renderer
+  GLFW.swapBuffers win
+
+renderLoop' :: World -> GraphicContext IO ()
+renderLoop' world = do
+  Env {..} <- ask -- Retrieve Graphic Environment
+  setupWindow -- Window Setup
+  drawCube world
+  paused              <- get
+  (world', userInput) <- liftIO $ do -- World Update
+    time                     <- getTimeF
+    userInput@UserInput {..} <- getUserInput window
+    if paused
+      then return (world, userInput)
+      else return $ (updateWorld world time userInput, userInput)
+  modify (/= pressedP userInput)
+  unless (pressedEsc userInput) (renderLoop' world')
+
+setupWindow :: GraphicContext IO ()
+setupWindow = do
+  Env {..} <- ask
+  liftIO $ GLFW.getWindowSize window >>= \(w, h) ->
+    LambdaCubeGL.setScreenSize storage (fromIntegral w) (fromIntegral h)
+
+updateWorld :: World -> Float -> UserInput -> World
+updateWorld world@World {..} time' UserInput {..} = world
+  { cube      = cube'
+  , angleX    = angleX'
+  , angleY    = angleY'
+  , animation = repeatAnimation animation'
+  , time      = time'
+  , perms     = perms'
+  }
+ where
+  angleX' | pressedUp   = angleX - 0.1
+          | pressedDown = angleX + 0.1
+          | otherwise   = angleX
+  angleY' | pressedRight = angleY + 0.1
+          | pressedLeft  = angleY - 0.1
+          | otherwise    = angleY
+  period' | -- | pressedUp        = max (period animation - 0.00) 0.1
+          -- | pressedDown      = min (period animation + 0.00) 4
+            otherwise =
+    period animation
+  perms' | isAnimationOver animation' = tail perms ++ [head perms]
+         | otherwise                  = perms
+  animation' = (stepAnimation time time' animation) { period = period'
+                                                    , rotatingFace = rotatingFace'
+                                                    , rotation = rotation'
+                                                    }
+  cube' | isAnimationOver animation' = applyPerm perm cube
+        | otherwise                  = cube
+  (perm, rotatingFace', rotation') = parseTurn (head perms)
+
+
+drawCube :: World -> GraphicContext IO ()
+drawCube world@World {..} = do
+  Env {..} <- ask
+  liftIO $ do
+  -- Update Uniform values
+    LambdaCubeGL.updateUniforms storage $ do
+      "time" @= return (time :: Float)
+      "angleX" @= return angleX
+      "angleY" @= return angleY
+      "rotatingFace" @= do
+        let f = fromMaybe (-1) (rotatingFace `elemIndex` directions)
+        return (fromIntegral f :: Float)
+      "faceAngle" @= return
+        (case rotation of
+          Clockwise        -> actualAngle :: Float
+          CounterClockwise -> -actualAngle :: Float
+        )
+    -- Update face colors and add them to screen
+    render window renderer
+    mapM_ (addFaceToScene cube) faceObjs
+  where FaceAnimation {..} = animation
+
+initWindow :: String -> Int -> Int -> IO Window
+initWindow title width height = do
+  GLFW.init
+  GLFW.defaultWindowHints
+  mapM_
+    GLFW.windowHint
+    [ WindowHint'ContextVersionMajor 3
+    , WindowHint'ContextVersionMinor 3
+    , WindowHint'OpenGLProfile OpenGLProfile'Core
+    , WindowHint'OpenGLForwardCompat True
+    ]
+  Just win <- GLFW.createWindow width height title Nothing Nothing
+  GLFW.makeContextCurrent $ Just win
+  return win
+
 main :: IO ()
 main = do
   Just pipelineDesc <- decodeStrict <$> SB.readFile "viewer.json"
@@ -107,333 +199,30 @@ main = do
   storage <- LambdaCubeGL.allocStorage inputSchema
 
   -- Create a standard Rubik's cube model encapsulated in a data structure
-  let cube  = makeCube n
+  let cube  = makeCube 3
   -- Generate meshes for each face of the cube, and pair them with the its
   -- direction
-  let faces = [ (faceMeshes d n n, d) | d <- directions ]
+  let faces = [ (faceMeshes d 3 3, d) | d <- directions ]
 
   -- Upload each generated face to the GPU memory and extract the graphics
   -- object from the IO Monad
-  -- objsList :: [FaceObject]
+  -- faceObjs :: [FaceObject]
   faceObjs <- forM faces $ \(face, faceDir) -> do
     obj <- uploadFaceToGPU storage face
     return $ FaceObject obj faceDir
-    
-  mapM_ (addFaceToScene cube) faceObjs
 
   time <- getTimeF
-  let animation = FaceAnimation 0.0 0.0 0.0 (-pi / 2) 0.65
-  let perms = words "U R F L B D L' R' B U D' B'"
+  let animation = FaceAnimation U Clockwise 0.0 0.0 0.0 (-pi / 2) 0.65
+  let perms      = words "U R F L B D" -- "L' R' B U D' B'"
   let circlePerm = ["U", "R", "U'", "L'", "U", "R'", "U'", "L"]
   -- Allocate GL pipeline
   renderer <- LambdaCubeGL.allocRenderer pipelineDesc
   LambdaCubeGL.setStorage renderer storage >>= \case -- check schema compatibility
     Just err -> putStrLn err
-    Nothing  -> renderLoop win renderer storage time animation cube faceObjs 0.0 0.0 perms
+    Nothing  -> do
+      let env   = Env win renderer storage faceObjs
+      let world = World cube 0.0 0.0 perms animation time
+      runGraphicContext (renderLoop' world) env -- Entry point of the Rendering Loop
   LambdaCubeGL.disposeRenderer renderer
-  -- LambdaCubeGL.disposeStorage storage
   GLFW.destroyWindow win
   GLFW.terminate
-
-data FaceAnimation = FaceAnimation {
-    startAngle :: Float,
-    actualAngle :: Float,
-    elapsedTime :: Float,
-    endAngle :: Float,
-    period :: Float 
-}
-
-render :: Window -> GLRenderer -> IO ()
-render win renderer = do
-    LambdaCubeGL.renderFrame renderer
-    GLFW.swapBuffers win
-    GLFW.pollEvents
-
-easing :: Float -> Float -> Float -> Float -> Float -> Float
--- easing start actual end elapsed period = start + end*elapsed/period
--- quadratic easing out
--- easing start actual end elapsed period = start - end*perc*(perc-2)
--- quadratic easing in/out
-easing start actual end elapsed period = 
-    if perc < 1 
-    then start + end/2*perc*perc 
-    else let t = perc - 1
-             in start - end/2 * (t*(t-2) - 1)
-    where perc = elapsed / (period / 2)
-
-getTimeF :: IO Float
-getTimeF = do
-  Just t <- GLFW.getTime
-  return $ realToFrac t
-
-stepAnimation :: Float -> Float -> FaceAnimation -> FaceAnimation
-stepAnimation t1 t2 animation@FaceAnimation {..}
-  | elapsedTime >= period = animation
-  | otherwise = animation { actualAngle=newAngle, elapsedTime=elapsedTime'}
-  where
-    elapsedTime' = elapsedTime + (t2 - t1)
-    newAngle = easing startAngle actualAngle endAngle elapsedTime period
-
-isAnimationOver :: FaceAnimation -> Bool
-isAnimationOver FaceAnimation {..} = elapsedTime >= period
-
-repeatAnimation :: FaceAnimation -> FaceAnimation
-repeatAnimation animation
-  | isAnimationOver animation = animation { elapsedTime = 0.0 }
-  | otherwise = animation
-
-renderLoop ::
-     Window
-  -> GLRenderer
-  -> GLStorage
-  -> Float
-  -> FaceAnimation
-  -> Cube
-  -> [FaceObject]
-  -> Float
-  -> Float
-  -> [String]
-  -> IO ()
-renderLoop win renderer storage time animation cube faceObjs angleX angleY perms
-  -- Update graphics input
- = do
-  GLFW.getWindowSize win >>= \(w, h) ->
-    LambdaCubeGL.setScreenSize storage (fromIntegral w) (fromIntegral h)
-  -- Collect User Input
-  UserInput left right up down <- getUserInput win
-
-  let angleX' -- NOT USED ANYMORE
-        | up = angleX + 0.1
-        | down = angleX - 0.1
-        | otherwise = angleX
-  let angleY'
-        | right = angleY + 0.1
-        | left = angleY - 0.1
-        | otherwise = angleY
-  let period'
-        | up = max (period animation -0.01) 0.1
-        | down = min (period animation + 0.01) 4
-        | otherwise = period animation
-  time' <- getTimeF
-  let animation'@FaceAnimation {..} = (stepAnimation time time' animation) {
-                                                                period = period'
-                                                                           }
-  let (p, rotatingFace, rotation) = parseTurn (head perms)
-
-  -- Update Uniform values
-  LambdaCubeGL.updateUniforms storage $ do
-    "time" @= return time'
-    "angleX" @= return angleX'
-    "angleY" @= return angleY'
-    "rotatingFace" @= do
-        let f = fromMaybe (-1) (rotatingFace `elemIndex` directions)
-        print f
-        return (fromIntegral f :: Float)
-    "faceAngle" @= return (case rotation of 
-                                  Clockwise -> actualAngle :: Float
-                                  CounterClockwise -> -actualAngle :: Float)
-
-  render win renderer
-  --             --
-  -- Cube update --
-  let p = parsePermutations (head perms)
-  let turnCube = isAnimationOver animation'
-  let perms' | isAnimationOver animation' = tail perms ++ [head perms]
-             | otherwise = perms
-  let cube'
-        | turnCube = applyPerm p cube
-        | otherwise = cube
-  -- Update face colors and add them to screen
-  mapM_ (addFaceToScene cube') faceObjs
-
-  when (isAnimationOver animation') (print cube') -- DEBUG
-
-  -- Cube update --
-  --             --
-  let keyIsPressed k = fmap (== KeyState'Pressed) $ GLFW.getKey win k
-  escape <- keyIsPressed Key'Escape
-  if escape
-    then return ()
-    else renderLoop
-           win
-           renderer
-           storage
-           time'
-           (repeatAnimation animation')
-           cube'
-           faceObjs
-           angleX'
-           angleY'
-           perms'
-
-
-data Square = Square V3F V3F V3F V3F
-
-mapSquare f (Square v1 v2 v3 v4) =
-  Square (fmap f v1) (fmap f v2) (fmap f v3) (fmap f v4)
-
-reverseSquare (Square v1 v2 v3 v4) = Square v2 v1 v4 v3
-
-pad :: Float
-pad = 0.00
-
-side :: Float
-side = 0.2
-
--- TODO: optimize concatenation by moving (++) to the front of the
--- expression for all cases
-faceMeshes :: Direction -> Int -> Int -> [Mesh]
-faceMeshes _   0    _    = []
-faceMeshes dir rows 0    = faceMeshes dir (rows - 1) n
-faceMeshes U   rows cols = cubie ++ faceMeshes U rows (cols - 1)
- where
-  cubie =
-    squareMeshes $ mapSquare (subtract 0.3)
-      $ Square
-          (V3 (side * fromIntegral (cols - 1) + pad)
-              0.6
-              (side * fromIntegral (rows - 1) + pad)
-          ) -- x1
-          (V3 (side * fromIntegral cols)
-              0.6
-              (side * fromIntegral (rows - 1) + pad)
-          )     -- x2
-          (V3 (side * fromIntegral (cols - 1) + pad)
-              0.6
-              (side * fromIntegral rows)
-          ) -- x3
-          (V3 (side * fromIntegral cols) 0.6 (side * fromIntegral rows)) -- x4
-faceMeshes D rows cols = cubie ++ faceMeshes D rows (cols - 1)
- where
-  cubie =
-    squareMeshes $ reverseSquare . mapSquare (subtract 0.3)
-      $ Square
-          (V3 (side * fromIntegral (cols - 1) + pad)
-              0.0
-              (side * fromIntegral (3 - rows) + pad)
-          ) -- x1
-          (V3 (side * fromIntegral cols)
-              0.0
-              (side * fromIntegral (3 - rows) + pad)
-          )     -- x2
-          (V3 (side * fromIntegral (cols - 1) + pad)
-              0.0
-              (side * fromIntegral (4 - rows))
-          ) -- x3
-          (V3 (side * fromIntegral cols) 0.0 (side * fromIntegral (4 - rows))) -- x4
-faceMeshes F rows cols = faceMeshes F rows (cols - 1) ++ cubie
- where
-  cubie =
-    squareMeshes $ mapSquare (subtract 0.3)
-      $ Square
-          (V3 (side * fromIntegral (3 - cols) + pad)
-              (side * fromIntegral (3 - rows) + pad)
-              0.0
-          ) -- x1
-          (V3 (side * fromIntegral (4 - cols))
-              (side * fromIntegral (3 - rows) + pad)
-              0.0
-          )     -- x2
-          (V3 (side * fromIntegral (3 - cols) + pad)
-              (side * fromIntegral (4 - rows))
-              0.0
-          ) -- x3
-          (V3 (side * fromIntegral (4 - cols))
-              (side * fromIntegral (4 - rows))
-              0.0
-          ) -- x4
-faceMeshes B rows cols = cubie ++ faceMeshes B rows (cols - 1)
- where
-  cubie =
-    squareMeshes $ reverseSquare . mapSquare (subtract 0.3)
-      $ Square
-          (V3 (side * fromIntegral (cols - 1) + pad)
-              (side * fromIntegral (3 - rows) + pad)
-              0.6
-          ) -- x1
-          (V3 (side * fromIntegral (cols))
-              (side * fromIntegral (3 - rows) + pad)
-              0.6
-          )     -- x2
-          (V3 (side * fromIntegral (cols - 1) + pad)
-              (side * fromIntegral (4 - rows))
-              0.6
-          ) -- x3
-          (V3 (side * fromIntegral (cols)) (side * fromIntegral (4 - rows)) 0.6) -- x4
--- FOR SOME REASON, AFTER APPLYING A PERSPECTIVE PROJECTION MATRIX, THE
--- LEFT FACE GETS SWAPPED WITH THE RIGHT FACE, SO I HAD TO FLIP THE DIRECTION
--- OF THE X AXIS. NEEDS SOME INVESTIGATION
-faceMeshes R rows cols = cubie ++ faceMeshes R rows (cols - 1)
- where
-  cubie =
-    squareMeshes $ mapSquare (subtract 0.3)
-      $ Square
-          (V3 0.0
-              (side * fromIntegral (rows - 1) + pad)
-              (side * fromIntegral (3 - cols) + pad)
-          ) -- x1
-          (V3 0.0
-              (side * fromIntegral rows)
-              (side * fromIntegral (3 - cols) + pad)
-          )     -- x2
-          (V3 0.0
-              (side * fromIntegral (rows - 1) + pad)
-              (side * fromIntegral (4 - cols))
-          ) -- x3
-          (V3 0.0 (side * fromIntegral rows) (side * fromIntegral (4 - cols))) -- x4
-faceMeshes L rows cols = faceMeshes L rows (cols - 1) ++ cubie
- where
-  cubie =
-    squareMeshes $ reverseSquare . mapSquare (subtract 0.3)
-      $ Square
-          (V3 0.6
-              (side * fromIntegral (3 - rows) + pad)
-              (side * fromIntegral (3 - cols) + pad)
-          ) -- x1
-          (V3 0.6
-              (side * fromIntegral (4 - rows))
-              (side * fromIntegral (3 - cols) + pad)
-          )     -- x2
-          (V3 0.6
-              (side * fromIntegral (3 - rows) + pad)
-              (side * fromIntegral (4 - cols))
-          ) -- x3
-          (V3 0.6
-              (side * fromIntegral (4 - rows))
-              (side * fromIntegral (4 - cols))
-          ) -- x4
-
-
-squareMeshes :: Square -> [Mesh]
-squareMeshes (Square v1 v2 v3 v4) =
-  [triangle v1 v2 v3 , triangle v4 v3 v2]
-
--- TODO: replace squareMeshes and use indices
-square :: V3F -> V3F -> V3F -> V3F -> Mesh
-square v1 v2 v3 v4 = Mesh
-  { mAttributes = Map.fromList
-                    [("position", A_V3F $ V.fromList [v1, v2, v3, v2, v3, v4])]
-  , mPrimitive  = P_Triangles
-  }
-
-
-triangle :: V3F -> V3F -> V3F -> Mesh
-triangle v1 v2 v3 = Mesh
-  { mAttributes = Map.fromList [("position", A_V3F $ V.fromList [v1, v2, v3])]
-  , mPrimitive  = P_Triangles
-  }
-
-initWindow :: String -> Int -> Int -> IO Window
-initWindow title width height = do
-  GLFW.init
-  GLFW.defaultWindowHints
-  mapM_
-    GLFW.windowHint
-    [ WindowHint'ContextVersionMajor 3
-    , WindowHint'ContextVersionMinor 3
-    , WindowHint'OpenGLProfile OpenGLProfile'Core
-    , WindowHint'OpenGLForwardCompat True
-    ]
-  Just win <- GLFW.createWindow width height title Nothing Nothing
-  GLFW.makeContextCurrent $ Just win
-  return win

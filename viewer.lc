@@ -67,17 +67,21 @@ makeFrame (time :: Float)
       -- translateBefore4 does NOT work, so we are limited to just one axis
       -- of interactive rotation (i.e. the Y axis)
       projmat = perspective 0.1 100.0 (40 * pi / 180) 1.0
-          .*. lookat (V3 0.0 1 (-2.0)) (V3 0.0 0.0 0.0) (V3 0.0 1.0 0.0)
+          .*. lookat (rotMatrixX angleX *. V4 0.0 1 (-2.0) 0.0)%xyz 
+                     (V3 0.0 0.0 0.0) 
+                     (rotMatrixX angleX *. V4 0.0 1.0 0.0 0.0)%xyz
           .*. rotMatrixY (if not (rotatingFace `eq` 0 || rotatingFace `eq` 4) then angleY else 0.0) -- NOT (UP OR DOWN)
           .*. rotMatrixY (if rotatingFace `eq` 0 then faceAngle + angleY else 0.0) -- UP
           .*. rotMatrixY (if rotatingFace `eq` 4 then -faceAngle + angleY else 0.0) -- DOWN
-          -- .*. rotMatrixX (if not (rotatingFace `eq` 1 || rotatingFace `eq` 3) then 0.0 else 0.0) -- NOT (LEFT OR RIGHT)
           .*. rotMatrixX (if rotatingFace `eq` 1 then faceAngle else 0.0) -- LEFT
           .*. rotMatrixX (if rotatingFace `eq` 3 then -faceAngle else 0.0) -- RIGHT
           .*. rotMatrixZ (if rotatingFace `eq` 2 then -faceAngle else 0.0) -- FRONT
           .*. rotMatrixZ (if rotatingFace `eq` 5 then faceAngle else 0.0) -- BACK
       projmat' = perspective 0.1 100.0 (40 * pi / 180) 1.0
-          .*. lookat (V3 0.0 1 (-2.0)) (V3 0.0 0.0 0.0) (V3 0.0 1.0 0.0)
+          .*. lookat (rotMatrixX angleX *. V4 0.0 1 (-2.0) 0.0)%xyz 
+                     (V3 0.0 0.0 0.0) 
+                     (rotMatrixX angleX *. V4 0.0 1.0 0.0 0.0)%xyz
+          -- .*. lookat (V3 0.0 1 (-2.0)) (V3 0.0 0.0 0.0) (V3 0.0 1.0 0.0)
           .*. rotMatrixY angleY 
           -- .*. rotMatrixX angleX 
       addShadow p c = c *! (p%y/1.5 + 0.9)
