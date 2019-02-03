@@ -14,6 +14,5 @@ during the learning phase.
 - Solve aliasing problem: does LambdaCube 3D allow antialiasing?
 - Add a solver
 
-### Preview
-![Alt Text](https://media.giphy.com/media/E0RTTTB1xuYYalkEec/giphy.gif)
-
+### Preview:
+<a href="url"><img src="https://media.giphy.com/media/pjP9HgLPK3km1KAHTG/giphy.gif" align="left" height="400" width="400"></a>
