@@ -13,6 +13,9 @@ data UserInput = UserInput {
   pressedEsc :: Bool
 }
 
+emptyInput :: UserInput
+emptyInput = UserInput False False False False False False
+
 getUserInput :: Window -> IO UserInput
 getUserInput win = do
   GLFW.pollEvents

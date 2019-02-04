@@ -75,33 +75,46 @@ data World = World { cube :: Cube,
                      time :: Float
                    }
 
+data IterationState = IterationState {
+                      paused :: Bool,
+                      userInput :: UserInput
+                                     }
+
 -- GraphicContext is the Monad in which the render loop performs.
 -- It holds a readonly rendering environment and a boolean state that describes
 -- whether the game is paused or not
-type GraphicContext m = ReaderT Env (StateT Bool m)
+type GraphicContext m = ReaderT Env (StateT IterationState m)
 
 runGraphicContext :: (Monad m) => GraphicContext m t -> Env -> m t
-runGraphicContext context env = evalStateT (runReaderT context env) False
-
+runGraphicContext context env =
+  evalStateT (runReaderT context env) (IterationState False emptyInput)
 
 render :: Window -> GLRenderer -> IO ()
 render win renderer = do
   LambdaCubeGL.renderFrame renderer
   GLFW.swapBuffers win
 
+-- Decide whether we need to put/resume on/from pause the loop
+iterationState :: UserInput -> IterationState -> IterationState
+iterationState newInput (IterationState paused lastInput) = if paused
+  then IterationState (not paused') newInput
+  else IterationState paused' newInput
+  where paused' = not (pressedP newInput) && pressedP lastInput
+
 renderLoop' :: World -> GraphicContext IO ()
 renderLoop' world = do
   Env {..} <- ask -- Retrieve Graphic Environment
   setupWindow -- Window Setup
   drawCube world
-  paused              <- get
+  paused              <- gets paused
   (world', userInput) <- liftIO $ do -- World Update
     time                     <- getTimeF
     userInput@UserInput {..} <- getUserInput window
     if paused
-      then return (world, userInput)
+      then return $ (world { time = time }, userInput) -- Update time even when paused 
       else return $ (updateWorld world time userInput, userInput)
-  modify (/= pressedP userInput)
+
+  modify (iterationState userInput)
   unless (pressedEsc userInput) (renderLoop' world')
 
 setupWindow :: GraphicContext IO ()
